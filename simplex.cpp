@@ -6,9 +6,11 @@
 #include <chrono>
 #include <fstream>
 #include <string>
+#include <map>
+#include <sstream>
 #include "linearalgebra.h"
 
-#define EPS 1e-10
+#define EPS 1e-7
 #define INF 1e9
 
 using namespace std;
@@ -135,7 +137,7 @@ relativeCost relativeCosts(const vector<vector<double>>& basicPartition,
     vector<double> lambda;
 
     int result = la::gauss(basicPartitionT, lambda);
-    
+cout << endl;
     if(result == INF)
     {
         relativeCost r;
@@ -249,10 +251,16 @@ vector<double> basicSolution(vector<vector<double>> basicPartition, const vector
         basicPartition[row].push_back(resources[row]);
     }
     la::gauss(basicPartition, xB);
+    for (double &val : xB) {
+        if (abs(val) < EPS) {
+            val = 0.0;
+        }
+    }
+    cout << endl;
     vector<double> basicCosts;
     for (int i = 0; i < basicColumns.size(); i++)
     {
-        basicCosts.push_back(costVector[basicColumns[i]]);
+            basicCosts.push_back(costVector[basicColumns[i]]);
     }
     double functionAnswer = 0;
     for (int i = 0; i < xB.size(); i++)
@@ -350,14 +358,13 @@ int phase2(const vector<vector<double>>& basicPartition,
 {
    relativeCost rc = relativeCosts(basicPartition, basicColumns, costVector, nonBasicPartition, nonBasicColumns);
     
-    
+    cout << "\nEnters Non basic column: " <<rc.lowestNonBColumn << "\nLowest Relative Cost: " << rc.lowestRC << "\n";
     if(rc.lowestRC >= -EPS)
     {
         cout << "Exited. ";
         return -1;
     }
     vector<double> xB = basicSolution(basicPartition, basicColumns, costVector, resources);
-    cout << "\nEnters Non basic column: " <<rc.lowestNonBColumn << "\nLowest Relative Cost: " << rc.lowestRC << "\n";
     
     int enteringCol = rc.lowestNonBColumn;
 
@@ -440,19 +447,38 @@ vector<double> simplex(const int& restQtt,
         cout << "Max iterations reached. Possibly cycling.\n";
         
     }
-    rebuildPartitions(restrictionsM, basicColumns, nonBasicColumns, basicPartition, nonBasicPartition);
-    vector<double> xB = basicSolution(basicPartition, basicColumns, obFunction, resources);
-
-    vector<double> fullSolution(varQtt, 0.0);
-
-    for (int i = 0; i < basicColumns.size(); ++i)
-    {
-        if (basicColumns[i] < varQtt)
-        {
-            fullSolution[basicColumns[i]] = xB[i];
+    int totalColumns = restrictionsM[0].size(); // important!
+    
+    vector<vector<double>> basicPartitionFull, nonBasicPartitionFull;
+    rebuildPartitions(restrictionsM, basicColumns, nonBasicColumns, basicPartitionFull, nonBasicPartitionFull);
+    vector<double> xB_full = basicSolution(basicPartitionFull, basicColumns, obFunction, resources);
+    
+    bool feasible = true;
+    for (int i = varQtt; i < totalColumns; ++i) {
+        double val = 0.0;
+        for (int j = 0; j < basicColumns.size(); ++j) {
+            if (basicColumns[j] == i) {
+                val = xB_full[j];
+                break;
+            }
+        }
+        if (val > EPS) {
+            cout << "INFEASIBLE: artificial variable x[" << i << "] = " << val << " > " << EPS << "\n";
+            feasible = false;
+            break;
         }
     }
- 
+    
+    if (!feasible) {
+        return {};
+    }
+    
+    vector<double> fullSolution(varQtt, 0.0);
+    for (int i = 0; i < basicColumns.size(); ++i) {
+        if (basicColumns[i] < varQtt) {
+            fullSolution[basicColumns[i]] = xB_full[i];
+        }
+    }
     return fullSolution;
 }
 
@@ -493,83 +519,153 @@ void receiveInput(vector<double>& costVector,
 
 }
 
-int receiveInputDIMACS(const string& filename,
+int receiveInputFile(const string& filename,
     vector<double>& costVector,
     vector<vector<double>>& A,
-    vector<double>& resources,
-    int& constraints,
-    int& variables)
+    vector<double>& resources, 
+    int& constraints,      
+    int& variables)        
 {
     ifstream file(filename);
     if (!file.is_open()) {
         cout << "Failed to open file." << endl;
-        return;
+        return -1;
     }
 
     string line;
+    vector<double> a_flat;
 
-    while (getline(file, line))
+    while (getline(file, line)) 
     {
-        if(line[0] == 'c')
-        {
+        if (line.empty() || line[0] == '#') continue;
+
+        if (line[0] == 'p') {
+            stringstream ss(line.substr(1));
+            ss >> variables >> constraints;
+            continue;
+        }
+
+        if (line[0] == 'a') {
+            stringstream ss(line.substr(1));
+            double val;
+            while (ss >> val) {
+                a_flat.push_back(val);
+            }
+            continue;
+        }
+
+        if (line[0] == 'b') {
+            stringstream ss(line.substr(1));
+            resources.resize(constraints);
+            for (int i = 0; i < constraints; i++) {
+                ss >> resources[i];
+            }
+            continue;
+        }
+
+        if (line[0] == 'c') {
+            stringstream ss(line.substr(1));
+            costVector.resize(variables);
+            for (int i = 0; i < variables; i++) {
+                ss >> costVector[i];
+            }
             continue;
         }
     }
-    
 
+    if (a_flat.size() != constraints * variables) {
+        cout << "Error: Number of 'a' values does not match dimensions specified in 'p'.\n";
+        return -1;
+    }
+
+    A.resize(constraints, vector<double>(variables));
+    int idx = 0;
+    for (int i = 0; i < constraints; ++i) {
+        for (int j = 0; j < variables; ++j) {
+            A[i][j] = a_flat[idx++];
+        }
+    }
+
+    file.close();
+    return 0;
 }
 
-int main()
+
+int main(int argc, char* argv[])
 {
-    
     vector<double> costVector{};
     vector<vector<double>> A{};
     vector<double> resources{};
     int constraints = -1;
     int variables = -1;
-    receiveInput(costVector, A, resources, constraints, variables);
-
-    cout << "-------\nMin of \n";
-    for (int i = 0; i < costVector.size(); i++)
+    if (argc < 2) 
     {
-        
-        cout << costVector[i] << "x" << i;
-        if(i != costVector.size() - 1)
-        {
-            cout << " + ";
-        }
+        cout << "Alternative usage: ./simplex <input_file>\n";
+        receiveInput(costVector, A, resources, constraints, variables);
     }
-    cout << "\n\n";
-    cout << "Subjected to:\n\n";
-    for (int i = 0; i < A.size(); i++)
+    else
     {
-        for (int j = 0; j < A[i].size(); j++)
-        {
-            cout << A[i][j] << ' ';
-        }
 
-        cout << " = " << resources[i] << "\n";
-        
+        string baseName = argv[1];
+        receiveInputFile(baseName,costVector, A, resources, constraints, variables);
     }
-    cout << "\n---";
+
+    if(costVector.size() < 20 && A.size() < 20 && A[0].size() < 20)
+    {
+        cout << "-------\nMin of \n";
+    
+        for (int i = 0; i < costVector.size(); i++)
+        {
+            
+            cout << costVector[i] << "x" << i;
+            if(i != costVector.size() - 1)
+            {
+                cout << " + ";
+            }
+        }
+        cout << "\n\n";
+        cout << "Subjected to:\n\n";
+        for (int i = 0; i < A.size(); i++)
+        {
+            for (int j = 0; j < A[i].size(); j++)
+            {
+                cout << A[i][j] << ' ';
+            }
+    
+            cout << " = " << resources[i] << "\n";
+            
+        }
+        cout << "\n---";
+
+    }
 
    
     auto start = chrono::high_resolution_clock::now(); 
     vector<double> solution = simplex(constraints, variables, costVector, resources, A);
     auto end = chrono::high_resolution_clock::now(); 
 
-    if(solution.size() > 0) cout << "\nFinal solution:\n";
-    for (int i = 0; i < solution.size(); ++i)
+    if(solution.size() > 0)
     {
-        cout << "x[" << i << "] = " << solution[i] << "\n";
+        cout << "\n----------------------\n";
+        cout << "\nFinal solution:\n";
+        vector<double> basicCosts;
+
+        double functionAnswer = 0;
+        for (int i = 0; i < solution.size(); i++)
+        {
+            if(costVector[i])
+            functionAnswer += solution[i]*costVector[i];
+        }
+
+        cout << "\nf(x) = " << functionAnswer << "\n\n";
+
+        for (int i = 0; i < solution.size(); ++i)
+        {
+            cout << "x[" << i << "] = " << solution[i] << "\n";
+        }
     }
 
 
     cout << "Simplex Method - Time elapsed: [" << chrono::duration_cast<chrono::milliseconds>(end - start).count() << "ms]\n";
     return 0;
 }
-
-
-//TODO:
-// - Testes e Experimentacao
-// - Otimizar gauss (sera que isso é necessario mesmo? tipo, o codigo ja ta super rapido)
